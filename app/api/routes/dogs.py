@@ -118,24 +118,25 @@ async def register_dog(
         filename = f"{uuid.uuid4()}.jpg"
         image_path = save_image_simple(image_data, filename)
         
-        # Create dog info
+        # Create dog info dictionary
         dog_id = str(uuid.uuid4())
+        # Get the first embedding from the results
+        embedding = embedding_results[0].embedding
         dog_info = {
-            'id': dog_id,
+            'id': uuid.UUID(dog_id),  # Convert string to UUID object
             'name': name,
             'breed': breed,
             'owner': owner,
             'description': description,
             'image_path': image_path,
-            'created_at': datetime.now()
+            'embedding_vector': embedding,  # Include embedding in the dictionary
+            'created_at': datetime.utcnow(),
+            'updated_at': datetime.utcnow()
         }
-        
-        # Extract embeddings (use first one for simplicity)
-        embedding = np.array(embedding_results[0].embedding)
         
         # Add to PostgreSQL database
         dog_repo = DogRepository(db)
-        dog = await dog_repo.create_dog(dog_info, embedding)
+        dog = await dog_repo.create_dog(dog_info)
         
         processing_time = time.time() - start_time
         
@@ -204,7 +205,13 @@ async def recognize_dog(
         # Search for similar dogs using PostgreSQL
         query_embedding = np.array(embedding_results[0].embedding)
         dog_repo = DogRepository(db)
-        matches = await dog_repo.search_similar_dogs(query_embedding, threshold=threshold)
+        
+        # Pass the query image for enhanced similarity calculation with color comparison
+        matches = await dog_repo.search_similar_dogs(
+            query_embedding, 
+            threshold=threshold,
+            query_image=image_array  # Pass image for color-based similarity
+        )
         
         processing_time = time.time() - start_time
         
@@ -258,8 +265,7 @@ async def list_dogs(db: AsyncSession = Depends(get_db)):
                 breed=dog.breed,
                 owner=dog.owner,
                 description=dog.description,
-                created_at=dog.created_at
-,
+                created_at=dog.created_at,
                 updated_at=dog.updated_at
             )
             dog_list.append(dog_info)

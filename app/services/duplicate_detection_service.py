@@ -10,9 +10,10 @@ from app.models.schemas import (
     SimilarityThresholds, ProcessingLog, DogMatchInfo, BestMatchResponse
 )
 from app.services.detection_service import detection_service
-from app.services.embedding_service import embedding_service
+from app.services.embedding_service import embedding_service, EmbeddingService
 from app.core.config import settings
 from app.core.log_config import logger
+from app.core.similarity_config import Thresholds
 from app.repositories.dog_repository import DogRepository, PendingDogRepository, ProcessingLogRepository
 
 class DuplicateDetectionService:
@@ -22,12 +23,18 @@ class DuplicateDetectionService:
     """
     
     def __init__(self):
-        self.thresholds = SimilarityThresholds()
+        # Enhanced thresholds for better color discrimination
+        self.thresholds = Thresholds()
+        self.embedding_service = EmbeddingService()
+        self.detection_service = detection_service
         logger.info("DuplicateDetectionService initialized with PostgreSQL integration")
     
     def set_thresholds(self, thresholds: SimilarityThresholds):
         """Update similarity thresholds"""
-        self.thresholds = thresholds
+        # Convert SimilarityThresholds to our internal Thresholds format
+        self.thresholds.auto_reject_threshold = thresholds.auto_reject_threshold
+        self.thresholds.pending_threshold_min = thresholds.pending_threshold_min
+        self.thresholds.auto_register_threshold = thresholds.auto_register_threshold
         logger.info(f"Updated thresholds: {thresholds}")
     
     async def check_for_duplicates(self, image: bytes, name: Optional[str] = None, 
@@ -301,17 +308,19 @@ class DuplicateDetectionService:
             # Save image to uploads directory
             image_path = self._save_image(image)
             
-            # Create dog info
+            # Create dog info dictionary
             dog_info = {
+                'id': uuid.uuid4(),  # Use UUID object directly
                 'name': name,
                 'breed': breed,
                 'owner': owner,
                 'description': description,
-                'image_path': image_path
+                'image_path': image_path,
+                'embedding_vector': embedding.tolist()  # Include embedding in the dictionary
             }
             
             # Add to PostgreSQL database
-            dog = await dog_repo.create_dog(dog_info, embedding)
+            dog = await dog_repo.create_dog(dog_info)
             
             logger.info(f"Auto-registered dog {dog.id} in PostgreSQL with similarity above threshold")
             
@@ -467,18 +476,20 @@ class DuplicateDetectionService:
             
             # Create dog info for main database
             dog_info = {
+                'id': uuid.uuid4(),  # Use UUID object directly
                 'name': pending_dog.name,
                 'breed': pending_dog.breed,
                 'owner': pending_dog.owner,
                 'description': pending_dog.description,
-                'image_path': pending_dog.image_path
+                'image_path': pending_dog.image_path,
+                'embedding_vector': pending_dog.embedding_vector  # Add missing embedding_vector field
             }
             
             # Convert embedding back to numpy array
             embedding = np.array(pending_dog.embedding_vector, dtype=np.float32)
             
             # Add to main dogs table
-            dog = await dog_repo.create_dog(dog_info, embedding)
+            dog = await dog_repo.create_dog(dog_info)
             
             # Update pending dog status to approved
             await pending_dog_repo.update_pending_dog_status(

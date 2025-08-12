@@ -6,46 +6,35 @@ from datetime import datetime
 import uuid
 import json
 import numpy as np
+import os
 
 from app.models.database_models import Dog, PendingDog, ProcessingLog
 from app.models.schemas import DogInfo, PendingDogInfo, ProcessingLog as ProcessingLogSchema
+from app.services.embedding_service import EmbeddingService
+from app.core.log_config import logger
 
 class DogRepository:
     """Repository for dog-related database operations"""
     
     def __init__(self, db: AsyncSession):
         self.db = db
+        self.embedding_service = EmbeddingService()
     
-    async def create_dog(self, dog_info: dict, embedding: np.ndarray) -> Dog:
-        """Create a new dog in the database"""
+    async def create_dog(self, dog_data: Dict[str, Any]) -> Dog:
+        """Create a new dog"""
         try:
-            # Convert embedding to list for JSON storage
-            embedding_list = embedding.tolist() if hasattr(embedding, 'tolist') else embedding
-            
-            dog = Dog(
-                id=uuid.uuid4(),
-                name=dog_info.get('name'),
-                breed=dog_info.get('breed'),
-                owner=dog_info.get('owner'),
-                description=dog_info.get('description'),
-                image_path=dog_info.get('image_path', ''),
-                embedding_vector=embedding_list,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-            
+            dog = Dog(**dog_data)
             self.db.add(dog)
             await self.db.commit()
             await self.db.refresh(dog)
-            
+            logger.info(f"Created dog with ID: {dog.id}")
             return dog
-            
         except Exception as e:
             await self.db.rollback()
             raise e
     
     async def get_dog_by_id(self, dog_id: str) -> Optional[Dog]:
-        """Get dog by ID"""
+        """Get a dog by ID"""
         try:
             result = await self.db.execute(
                 select(Dog).where(Dog.id == uuid.UUID(dog_id))
@@ -54,6 +43,16 @@ class DogRepository:
         except Exception as e:
             raise e
     
+    async def get_dog_by_image_path(self, image_path: str) -> Optional[Dog]:
+        """Get a dog by image path"""
+        try:
+            result = await self.db.execute(
+                select(Dog).where(Dog.image_path == image_path)
+            )
+            return result.scalar_one_or_none()
+        except Exception as e:
+            raise e
+
     async def get_all_dogs(self) -> List[Dog]:
         """Get all dogs"""
         try:
@@ -62,8 +61,9 @@ class DogRepository:
         except Exception as e:
             raise e
     
-    async def search_similar_dogs(self, query_embedding: np.ndarray, threshold: float = 0.6) -> List[Dict[str, Any]]:
-        """Search for similar dogs using cosine similarity"""
+    async def search_similar_dogs(self, query_embedding: np.ndarray, threshold: float = 0.6,
+                                 query_image: Optional[np.ndarray] = None) -> List[Dict[str, Any]]:
+        """Search for similar dogs using enhanced similarity calculation"""
         try:
             # Get all dogs
             dogs = await self.get_all_dogs()
@@ -74,8 +74,24 @@ class DogRepository:
                     # Convert stored embedding back to numpy array
                     stored_embedding = np.array(dog.embedding_vector, dtype=np.float32)
                     
-                    # Calculate cosine similarity
-                    similarity = self._calculate_similarity(query_embedding, stored_embedding)
+                    # Use enhanced similarity calculation if query image is provided
+                    if query_image is not None:
+                        # Try to get the stored dog's image for color comparison
+                        stored_image = self._load_dog_image(dog.image_path)
+                        if stored_image is not None:
+                            similarity = self.embedding_service.compute_enhanced_similarity(
+                                query_embedding, stored_embedding, query_image, stored_image
+                            )
+                        else:
+                            # Fallback to regular similarity if image not available
+                            similarity = self.embedding_service.compute_similarity(
+                                query_embedding, stored_embedding
+                            )
+                    else:
+                        # Use regular similarity calculation
+                        similarity = self.embedding_service.compute_similarity(
+                            query_embedding, stored_embedding
+                        )
                     
                     if similarity >= threshold:
                         matches.append({
@@ -99,8 +115,22 @@ class DogRepository:
         except Exception as e:
             raise e
     
+    def _load_dog_image(self, image_path: str) -> Optional[np.ndarray]:
+        """Load dog image from path for color comparison"""
+        try:
+            import cv2
+            if image_path and os.path.exists(image_path):
+                # Load image and convert to RGB
+                image = cv2.imread(image_path)
+                if image is not None:
+                    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            return None
+        except Exception as e:
+            logger.debug(f"Error loading dog image {image_path}: {e}")
+            return None
+    
     def _calculate_similarity(self, emb1: np.ndarray, emb2: np.ndarray) -> float:
-        """Calculate cosine similarity between two embeddings"""
+        """Calculate cosine similarity between two embeddings (legacy method)"""
         try:
             # Normalize embeddings
             norm1 = np.linalg.norm(emb1)
