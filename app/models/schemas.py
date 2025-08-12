@@ -130,6 +130,14 @@ class BestMatchResponse(BaseModel):
     best_match: Optional[DogMatchInfo] = None
     processing_time: float
 
+class TopMatchesResponse(BaseModel):
+    """Response for finding the top matches for a single image"""
+    success: bool
+    message: str
+    top_matches: List[DogMatchInfo] = []
+    total_matches_found: int
+    processing_time: float
+
 class PendingDogResponse(BaseModel):
     success: bool
     message: str

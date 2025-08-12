@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, BackgroundTasks, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Optional
 import time
@@ -6,7 +6,7 @@ import time
 from app.models.schemas import (
     DuplicateCheckResponse, PendingDogsListResponse, ApprovalRequest, 
     ApprovalResponse, SimilarityThresholds, ProcessingLog,
-    MultiImageDuplicateCheckResponse, ImageMatchResult, DogMatchInfo, BestMatchResponse
+    MultiImageDuplicateCheckResponse, ImageMatchResult, DogMatchInfo, BestMatchResponse, TopMatchesResponse
 )
 from app.services.duplicate_detection_service import duplicate_detection_service
 from app.core.database import get_db
@@ -90,19 +90,20 @@ async def check_for_duplicates(
         logger.error(f"Error in duplicate check: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing images: {str(e)}")
 
-@router.post("/check-single", response_model=BestMatchResponse)
+@router.post("/check-single", response_model=TopMatchesResponse)
 async def check_for_duplicates_single(
     image: UploadFile = File(...),
+    top_k: int = Query(5, ge=1, le=20, description="Number of top matches to return (1-20)"),
     db: AsyncSession = Depends(get_db)
 ):
-    """Check for duplicates in a single uploaded image and return best match"""
+    """Check for duplicates in a single uploaded image and return top k matches"""
     try:
         # Read image data
         image_data = await image.read()
         
-        # Find best match using the new method
-        response = await duplicate_detection_service.find_best_match(
-            image_data, db
+        # Find top k matches using the new method
+        response = await duplicate_detection_service.find_top_matches(
+            image_data, db, top_k=top_k
         )
         
         return response

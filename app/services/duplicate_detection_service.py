@@ -7,7 +7,7 @@ from typing import List, Optional, Tuple, Dict, Any
 
 from app.models.schemas import (
     PendingDogInfo, PendingDogStatus, DuplicateCheckResponse,
-    SimilarityThresholds, ProcessingLog, DogMatchInfo, BestMatchResponse
+    SimilarityThresholds, ProcessingLog, DogMatchInfo, BestMatchResponse, TopMatchesResponse
 )
 from app.services.detection_service import detection_service
 from app.services.embedding_service import embedding_service, EmbeddingService
@@ -295,6 +295,141 @@ class DuplicateDetectionService:
             return BestMatchResponse(
                 success=False,
                 message=f"Error processing image: {str(e)}",
+                processing_time=time.time() - start_time
+            )
+    
+    async def find_top_matches(self, image: bytes, db_session=None, top_k: int = 5) -> 'TopMatchesResponse':
+        """Find top k matches for a single image"""
+        start_time = time.time()
+        
+        if not db_session:
+            return TopMatchesResponse(
+                success=False,
+                message="Database session required",
+                top_matches=[],
+                total_matches_found=0,
+                processing_time=time.time() - start_time
+            )
+        
+        try:
+            # Initialize repositories
+            dog_repo = DogRepository(db_session)
+            
+            # Convert image bytes to numpy array
+            image_array = self._bytes_to_numpy(image)
+            
+            # Detect dogs in the image
+            try:
+                detections = detection_service.detect_dogs(image_array)
+                if not detections:
+                    return TopMatchesResponse(
+                        success=False,
+                        message="No dogs detected in the image",
+                        top_matches=[],
+                        total_matches_found=0,
+                        processing_time=time.time() - start_time
+                    )
+            except Exception as e:
+                logger.error(f"Error in dog detection: {str(e)}")
+                return TopMatchesResponse(
+                    success=False,
+                    message=f"Error detecting dogs: {str(e)}",
+                    top_matches=[],
+                    total_matches_found=0,
+                    processing_time=time.time() - start_time
+                )
+            
+            # Generate embeddings
+            try:
+                embedding_results = embedding_service.generate_embeddings_from_detections(
+                    image_array, detections
+                )
+                
+                if not embedding_results:
+                    return TopMatchesResponse(
+                        success=False,
+                        message="Could not generate embeddings",
+                        top_matches=[],
+                        total_matches_found=0,
+                        processing_time=time.time() - start_time
+                    )
+            except Exception as e:
+                logger.error(f"Error in embedding generation: {str(e)}")
+                return TopMatchesResponse(
+                    success=False,
+                    message=f"Error generating embeddings: {str(e)}",
+                    top_matches=[],
+                    total_matches_found=0,
+                    processing_time=time.time() - start_time
+                )
+            
+            # Search for similar dogs using PostgreSQL
+            try:
+                query_embedding = np.array(embedding_results[0].embedding, dtype=np.float32)
+                logger.info(f"Query embedding shape: {query_embedding.shape}, type: {query_embedding.dtype}")
+                
+                # Search for similar dogs in PostgreSQL with a lower threshold to get more candidates
+                search_threshold = 0.5  # Lower threshold to get more potential matches
+                matches = await dog_repo.search_similar_dogs(
+                    query_embedding, 
+                    threshold=search_threshold
+                )
+                logger.info(f"Found {len(matches) if matches else 0} similar dogs using PostgreSQL")
+                
+            except Exception as e:
+                logger.error(f"Error in similarity search: {str(e)}")
+                return TopMatchesResponse(
+                    success=False,
+                    message=f"Error searching for similar dogs: {str(e)}",
+                    top_matches=[],
+                    total_matches_found=0,
+                    processing_time=time.time() - start_time
+                )
+            
+            processing_time = time.time() - start_time
+            
+            if not matches:
+                return TopMatchesResponse(
+                    success=True,
+                    message="No similar dogs found in database",
+                    top_matches=[],
+                    total_matches_found=0,
+                    processing_time=processing_time
+                )
+            
+            # Get top k matches
+            top_matches = matches[:top_k]
+            
+            # Create DogMatchInfo objects from the matches
+            top_matches_info = []
+            for match in top_matches:
+                dog_match_info = DogMatchInfo(
+                    dog_id=match['dog_id'],
+                    name=match['dog_info']['name'],
+                    breed=match['dog_info'].get('breed'),
+                    owner=match['dog_info'].get('owner'),
+                    similarity_score=match['similarity_score'],
+                    image_path=None  # The repository doesn't return image_path
+                )
+                top_matches_info.append(dog_match_info)
+            
+            logger.info(f"Found {len(top_matches_info)} top matches, best score: {top_matches_info[0].similarity_score:.3f}")
+            
+            return TopMatchesResponse(
+                success=True,
+                message=f"Found {len(top_matches_info)} top matches",
+                top_matches=top_matches_info,
+                total_matches_found=len(matches),
+                processing_time=processing_time
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in find_top_matches: {str(e)}")
+            return TopMatchesResponse(
+                success=False,
+                message=f"Error processing image: {str(e)}",
+                top_matches=[],
+                total_matches_found=0,
                 processing_time=time.time() - start_time
             )
     
