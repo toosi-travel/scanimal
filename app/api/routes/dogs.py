@@ -1,9 +1,10 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Query
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form, Query, Depends
 from fastapi.responses import JSONResponse
 import cv2
 import numpy as np
 import uuid
 import time
+import os
 from typing import List, Optional
 from datetime import datetime
 import io
@@ -15,12 +16,13 @@ from app.models.schemas import (
 )
 from app.services.detection_service import detection_service
 from app.services.embedding_service import embedding_service
-from app.services.faiss_service import faiss_service
 from app.core.config import settings
 from app.core.log_config import logger
+from app.core.database import get_db
+from app.repositories.dog_repository import DogRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
-router = APIRouter(prefix="/dogs", tags=["dogs"])
-
+router = APIRouter()
 
 def validate_image_file(file: UploadFile) -> bool:
     """Validate uploaded image file"""
@@ -34,13 +36,10 @@ def validate_image_file(file: UploadFile) -> bool:
     
     return True
 
-def image_to_numpy(image_file: UploadFile) -> np.ndarray:
-    """Convert uploaded image to numpy array"""
+def image_to_numpy(image_data: bytes) -> np.ndarray:
+    """Convert image bytes to numpy array"""
     try:
-        # Read image data
-        image_data = image_file.file.read()
-        
-        # Convert to numpy array
+        # Convert bytes to numpy array
         nparr = np.frombuffer(image_data, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         
@@ -52,16 +51,28 @@ def image_to_numpy(image_file: UploadFile) -> np.ndarray:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error processing image: {str(e)}")
 
+def save_image_simple(image_data: bytes, filename: str) -> str:
+    """Simple image saving to uploads folder"""
+    upload_dir = "uploads"
+    os.makedirs(upload_dir, exist_ok=True)
+    
+    filepath = os.path.join(upload_dir, filename)
+    with open(filepath, 'wb') as f:
+        f.write(image_data)
+    
+    return filepath
+
 @router.post("/register", response_model=RegistrationResponse)
 async def register_dog(
     image: UploadFile = File(...),
-    name: str = Form(...),
+    name: Optional[str] = Form(None),
     breed: Optional[str] = Form(None),
     owner: Optional[str] = Form(None),
-    description: Optional[str] = Form(None)
+    description: Optional[str] = Form(None),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Register a new dog with face recognition
+    Register a new dog with face recognition using PostgreSQL
     
     Upload an image of a dog to register it in the database.
     The system will detect the dog's face and generate embeddings for recognition.
@@ -76,8 +87,11 @@ async def register_dog(
                 detail="Invalid image file. Supported formats: JPG, JPEG, PNG, BMP"
             )
         
+        # Read image data ONCE
+        image_data = await image.read()
+        
         # Convert image to numpy array
-        image_array = image_to_numpy(image)
+        image_array = image_to_numpy(image_data)
         
         # Detect dogs in the image
         detections = detection_service.detect_dogs(image_array)
@@ -100,51 +114,53 @@ async def register_dog(
                 detail="Could not generate face embeddings. Please ensure the dog's face is clearly visible."
             )
         
+        # Save image to uploads folder
+        filename = f"{uuid.uuid4()}.jpg"
+        image_path = save_image_simple(image_data, filename)
+        
         # Create dog info
         dog_id = str(uuid.uuid4())
-        dog_info = DogInfo(
-            id=dog_id,
-            name=name,
-            breed=breed,
-            owner=owner,
-            description=description,
-            created_at=datetime.now()
-        )
+        dog_info = {
+            'id': dog_id,
+            'name': name,
+            'breed': breed,
+            'owner': owner,
+            'description': description,
+            'image_path': image_path,
+            'created_at': datetime.now()
+        }
         
-        # Extract embeddings
-        embeddings = [np.array(result.embedding) for result in embedding_results]
+        # Extract embeddings (use first one for simplicity)
+        embedding = np.array(embedding_results[0].embedding)
         
-        # Add to database
-        success = faiss_service.add_dog(dog_info, embeddings)
-        
-        if not success:
-            raise HTTPException(
-                status_code=500, 
-                detail="Failed to add dog to database"
-            )
+        # Add to PostgreSQL database
+        dog_repo = DogRepository(db)
+        dog = await dog_repo.create_dog(dog_info, embedding)
         
         processing_time = time.time() - start_time
         
         return RegistrationResponse(
             success=True,
-            message=f"Dog '{name}' registered successfully with {len(embeddings)} face embeddings",
+            message=f"Dog '{name}' registered successfully in PostgreSQL with 1 face embedding",
             dog_id=dog_id,
-            embedding_count=len(embeddings)
+            embedding_count=1
         )
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error registering dog: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/recognize", response_model=RecognitionResponse)
 async def recognize_dog(
     image: UploadFile = File(...),
     top_k: int = Query(5, ge=1, le=20, description="Number of top matches to return"),
-    threshold: float = Query(0.6, ge=0.0, le=1.0, description="Minimum similarity threshold")
+    threshold: float = Query(0.6, ge=0.0, le=1.0, description="Minimum similarity threshold"),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Recognize a dog from an uploaded image
+    Recognize a dog from an uploaded image using PostgreSQL
     
     Upload an image of a dog to find similar dogs in the database.
     Returns the top matches with similarity scores.
@@ -159,8 +175,11 @@ async def recognize_dog(
                 detail="Invalid image file. Supported formats: JPG, JPEG, PNG, BMP"
             )
         
+        # Read image data ONCE
+        image_data = await image.read()
+        
         # Convert image to numpy array
-        image_array = image_to_numpy(image)
+        image_array = image_to_numpy(image_data)
         
         # Detect dogs in the image
         detections = detection_service.detect_dogs(image_array)
@@ -182,9 +201,10 @@ async def recognize_dog(
                 detail="Could not generate face embeddings. Please ensure the dog's face is clearly visible."
             )
         
-        # Search for similar dogs using the first embedding
+        # Search for similar dogs using PostgreSQL
         query_embedding = np.array(embedding_results[0].embedding)
-        matches = faiss_service.search_similar(query_embedding, k=top_k, threshold=threshold)
+        dog_repo = DogRepository(db)
+        matches = await dog_repo.search_similar_dogs(query_embedding, threshold=threshold)
         
         processing_time = time.time() - start_time
         
@@ -196,54 +216,78 @@ async def recognize_dog(
                 processing_time=processing_time
             )
         
+        # Convert matches to the expected format
+        from app.models.schemas import SimilarityMatch
+        similarity_matches = []
+        
+        for match in matches[:top_k]:
+            similarity_match = SimilarityMatch(
+                dog_id=match['dog_id'],
+                dog_info=DogInfo(**match['dog_info']),
+                similarity_score=match['similarity_score'],
+                distance=match['distance']
+            )
+            similarity_matches.append(similarity_match)
+        
         return RecognitionResponse(
             success=True,
-            message=f"Found {len(matches)} similar dogs",
-            matches=matches,
+            message=f"Found {len(similarity_matches)} similar dogs",
+            matches=similarity_matches,
             processing_time=processing_time
         )
         
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error recognizing dog: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.get("/list", response_model=List[DogInfo])
+async def list_dogs(db: AsyncSession = Depends(get_db)):
+    """List all dogs in the database"""
+    try:
+        dog_repo = DogRepository(db)
+        dogs = await dog_repo.get_all_dogs()
+        
+        # Convert to DogInfo format
+        dog_list = []
+        for dog in dogs:
+            dog_info = DogInfo(
+                id=str(dog.id),
+                name=dog.name,
+                breed=dog.breed,
+                owner=dog.owner,
+                description=dog.description,
+                created_at=dog.created_at
+,
+                updated_at=dog.updated_at
+            )
+            dog_list.append(dog_info)
+        
+        return dog_list
+        
+    except Exception as e:
+        logger.error(f"Error listing dogs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.get("/database/info", response_model=DatabaseInfo)
-async def get_database_info():
-    """Get information about the dog database"""
+async def get_database_info(db: AsyncSession = Depends(get_db)):
+    """Get database information and statistics"""
     try:
-        info = faiss_service.get_database_info()
-        return DatabaseInfo(**info)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error getting database info: {str(e)}")
-
-@router.delete("/{dog_id}")
-async def remove_dog(dog_id: str):
-    """Remove a dog from the database"""
-    try:
-        success = faiss_service.remove_dog(dog_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Dog not found in database")
+        dog_repo = DogRepository(db)
+        dogs = await dog_repo.get_all_dogs()
         
-        return {"success": True, "message": f"Dog {dog_id} removed successfully"}
+        return DatabaseInfo(
+            total_dogs=len(dogs),
+            total_embeddings=len(dogs),  # Simple: 1 embedding per dog
+            database_size_mb=0.0,  # Not implemented for simplicity
+            embedding_dimension=512,  # ArcFace dimension
+            last_updated=datetime.now()
+        )
         
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error removing dog: {str(e)}")
-
-@router.get("/list")
-async def list_dogs():
-    """List all dogs in the database"""
-    try:
-        dogs = list(faiss_service.dog_database.values())
-        return {
-            "success": True,
-            "dogs": [dog.dict() for dog in dogs],
-            "total": len(dogs)
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error listing dogs: {str(e)}")
+        logger.error(f"Error getting database info: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.get("/health", response_model=HealthCheck)
 async def health_check():
@@ -251,5 +295,5 @@ async def health_check():
     return HealthCheck(
         status="healthy",
         timestamp=datetime.now(),
-        version=settings.version
+        version="1.0.0"
     ) 

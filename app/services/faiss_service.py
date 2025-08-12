@@ -7,6 +7,7 @@ from typing import List, Dict, Tuple, Optional
 from datetime import datetime
 import uuid
 from app.core.config import settings
+from app.core.log_config import logger
 from app.models.schemas import DogInfo, SimilarityMatch
 
 class FAISSService:
@@ -22,11 +23,11 @@ class FAISSService:
             # Load FAISS index
             if os.path.exists(settings.database_path):
                 self.index = faiss.read_index(settings.database_path)
-                print(f"Loaded FAISS index with {self.index.ntotal} vectors")
+                logger.info(f"Loaded FAISS index with {self.index.ntotal} vectors")
             else:
                 # Create new index
                 self.index = faiss.IndexFlatIP(settings.embedding_dimension)
-                print("Created new FAISS index")
+                logger.info("Created new FAISS index")
             
             # Load dog database metadata
             metadata_path = settings.database_path.replace('.faiss', '_metadata.json')
@@ -35,10 +36,10 @@ class FAISSService:
                     data = json.load(f)
                     self.dog_database = {k: DogInfo(**v) for k, v in data['dogs'].items()}
                     self.embedding_to_dog_id = data['embedding_to_dog_id']
-                print(f"Loaded {len(self.dog_database)} dogs from database")
+                logger.info(f"Loaded {len(self.dog_database)} dogs from database")
             
         except Exception as e:
-            print(f"Error loading database: {e}")
+            logger.error(f"Error loading database: {e}")
             # Initialize empty database
             self.index = faiss.IndexFlatIP(settings.embedding_dimension)
             self.dog_database = {}
@@ -61,10 +62,10 @@ class FAISSService:
             with open(metadata_path, 'w') as f:
                 json.dump(metadata, f, indent=2, default=str)
             
-            print(f"Database saved successfully")
+            logger.info(f"Database saved successfully")
             
         except Exception as e:
-            print(f"Error saving database: {e}")
+            logger.error(f"Error saving database: {e}")
     
     def add_dog(self, dog_info: DogInfo, embeddings: List[np.ndarray]) -> bool:
         """
@@ -79,7 +80,7 @@ class FAISSService:
         """
         try:
             if not embeddings:
-                print("No embeddings provided")
+                logger.warning("No embeddings provided")
                 return False
             
             # Normalize embeddings
@@ -102,11 +103,11 @@ class FAISSService:
             # Save database
             self.save_database()
             
-            print(f"Added dog {dog_info.name} with {len(embeddings)} embeddings")
+            logger.info(f"Added dog {dog_info.name} with {len(embeddings)} embeddings")
             return True
             
         except Exception as e:
-            print(f"Error adding dog to database: {e}")
+            logger.error(f"Error adding dog to database: {e}")
             return False
     
     def search_similar(self, query_embedding: np.ndarray, k: int = 5, 
@@ -160,7 +161,7 @@ class FAISSService:
             return matches
             
         except Exception as e:
-            print(f"Error searching database: {e}")
+            logger.error(f"Error searching database: {e}")
             return []
     
     def get_database_info(self) -> Dict:
@@ -178,7 +179,7 @@ class FAISSService:
             }
             
         except Exception as e:
-            print(f"Error getting database info: {e}")
+            logger.error(f"Error getting database info: {e}")
             return {
                 'total_dogs': 0,
                 'total_embeddings': 0,
@@ -198,7 +199,7 @@ class FAISSService:
         """
         try:
             if dog_id not in self.dog_database:
-                print(f"Dog {dog_id} not found in database")
+                logger.warning(f"Dog {dog_id} not found in database")
                 return False
             
             # Find all embeddings for this dog
@@ -208,7 +209,7 @@ class FAISSService:
                     indices_to_remove.append(i)
             
             if not indices_to_remove:
-                print(f"No embeddings found for dog {dog_id}")
+                logger.warning(f"No embeddings found for dog {dog_id}")
                 return False
             
             # Remove from FAISS index (this is complex, so we'll rebuild)
@@ -220,11 +221,11 @@ class FAISSService:
             # Save database
             self.save_database()
             
-            print(f"Removed dog {dog_id} with {len(indices_to_remove)} embeddings")
+            logger.info(f"Removed dog {dog_id} with {len(indices_to_remove)} embeddings")
             return True
             
         except Exception as e:
-            print(f"Error removing dog: {e}")
+            logger.error(f"Error removing dog: {e}")
             return False
     
     def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
@@ -258,7 +259,7 @@ class FAISSService:
                 self.embedding_to_dog_id = []
                 
         except Exception as e:
-            print(f"Error rebuilding index: {e}")
+            logger.error(f"Error rebuilding index: {e}")
 
 # Global instance
 faiss_service = FAISSService() 

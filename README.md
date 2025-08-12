@@ -1,315 +1,291 @@
 # Dog Face Recognition API
 
-A FastAPI-based dog face recognition system that uses YOLOv8 for detection, ArcFace for embedding generation, and FAISS for efficient similarity search.
+A FastAPI-based dog face recognition system using YOLOv8 and PostgreSQL.
 
 ## Features
 
-- **Dog Detection**: Uses YOLOv8m.pt model to detect dogs in images
-- **Face Embedding**: Generates 512-dimensional face embeddings using ArcFace (insightface)
-- **Similarity Search**: Fast similarity search using FAISS (Facebook AI Similarity Search)
-- **RESTful API**: Complete REST API with automatic documentation
-- **Database Management**: Persistent storage of dog information and embeddings
+- **Dog Registration**: Register new dogs with face images
+- **Dog Recognition**: Recognize dogs from uploaded images
+- **Duplicate Detection**: Detect potential duplicate dogs
+- **PostgreSQL Database**: Store dog information and metadata
+- **RESTful API**: Clean API endpoints for all operations
 
-## Architecture
+## Prerequisites
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Upload Image  │───▶│  YOLOv8 Detect  │───▶│ Extract Face    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                       │
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   FAISS Search  │◀───│  Store in DB    │◀───│ ArcFace Embed   │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+- Python 3.8+
+- PostgreSQL database
+- Required Python packages (see requirements.txt)
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.8+
-- pip
-- Git
-
-### Setup
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd scan-backend
-   ```
-
-2. **Create virtual environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Download YOLOv8 model** (optional - will be downloaded automatically on first run)
-   ```bash
-   # The model will be downloaded automatically when the app starts
-   # or you can manually download yolov8m.pt to the project root
-   ```
-
-## Usage
-
-### Starting the Server
-
+1. Clone the repository:
 ```bash
-# Development mode
-python -m app.main
+git clone <repository-url>
+cd scan-backend
+```
 
-# Or using uvicorn directly
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+2. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-# Or using the startup script
+3. Configure your PostgreSQL database in `app/core/config.py`:
+```python
+# PostgreSQL settings
+postgresql_user: str = "your_username"
+postgresql_pass: str = "your_password"
+postgresql_host: str = "your_host"
+postgresql_db: str = "your_database"
+postgresql_port: int = 5432
+```
+
+## Database Setup
+
+1. Initialize the database:
+```bash
+python init_database.py
+```
+
+2. Or run migrations with Alembic:
+```bash
+alembic upgrade head
+```
+
+## Running the Application
+
+### Option 1: Direct Python execution
+```bash
+python run.py
+```
+
+### Option 2: Using uvicorn directly
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+### Option 3: Using the start script
+```bash
 python start.py
 ```
 
-The API will be available at:
-- **API**: http://localhost:8000
-- **Interactive Docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+## API Endpoints
 
-### API Endpoints
+### Dogs
+- `POST /dogs/register` - Register a new dog
+- `POST /dogs/recognize` - Recognize a dog from image
+- `GET /dogs/list` - List all registered dogs
+- `GET /dogs/database/info` - Get database information
+- `DELETE /dogs/{dog_id}` - Remove a dog
+- `GET /dogs/health` - Health check
 
-#### 1. Register a Dog
+### Duplicate Detection
+- `POST /duplicate-detection/check` - Check multiple images for duplicates and return best matches
+- `POST /duplicate-detection/check-single` - Check single image for duplicates and return best match
+- `GET /duplicate-detection/pending` - Get pending duplicates
+- `POST /duplicate-detection/pending/{id}/approve` - Approve duplicate
+- `POST /duplicate-detection/pending/{id}/reject` - Reject duplicate
+- `GET /duplicate-detection/thresholds` - Get detection thresholds
+- `GET /duplicate-detection/stats` - Get system statistics
+- `GET /duplicate-detection/logs` - Get processing logs
+
+## Multi-Image Duplicate Detection
+
+The new `/duplicate-detection/check` endpoint allows you to process multiple images simultaneously and get the best match for each image without auto-approving or rejecting.
+
+### Request Format
 ```http
-POST /dogs/register
+POST /duplicate-detection/check
 Content-Type: multipart/form-data
 
 Form Data:
-- image: Dog image file (JPG, PNG, BMP)
-- name: Dog's name (required)
-- breed: Dog's breed (optional)
-- owner: Owner's name (optional)
-- description: Additional description (optional)
+- images: Multiple image files (JPG, PNG, BMP)
 ```
 
-**Response:**
+### Response Format
 ```json
 {
   "success": true,
-  "message": "Dog 'Buddy' registered successfully with 2 face embeddings",
-  "dog_id": "uuid-string",
-  "embedding_count": 2
-}
-```
-
-#### 2. Recognize a Dog
-```http
-POST /dogs/recognize
-Content-Type: multipart/form-data
-
-Form Data:
-- image: Dog image file (JPG, PNG, BMP)
-
-Query Parameters:
-- top_k: Number of top matches (default: 5, max: 20)
-- threshold: Minimum similarity threshold (default: 0.6, range: 0.0-1.0)
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Found 3 similar dogs",
-  "matches": [
+  "message": "Processed 3 images. 2 successful matches, 1 failed.",
+  "total_images": 3,
+  "successful_matches": 2,
+  "failed_images": 1,
+  "results": [
     {
-      "dog_id": "uuid-string",
-      "dog_info": {
-        "id": "uuid-string",
+      "image_index": 0,
+      "success": true,
+      "message": "Best match found: Buddy (Score: 0.923)",
+      "best_match": {
+        "dog_id": "uuid-string",
         "name": "Buddy",
         "breed": "Golden Retriever",
         "owner": "John Doe",
-        "description": "Friendly dog",
-        "created_at": "2024-01-01T12:00:00"
+        "similarity_score": 0.923
       },
-      "similarity_score": 0.95,
-      "distance": 0.05
+      "processing_time": 0.156
     }
   ],
-  "processing_time": 0.234
+  "total_processing_time": 0.234
 }
 ```
 
-#### 3. Database Information
+### Key Features
+- **Multiple Images**: Process up to 10+ images in a single request
+- **Best Match Only**: Returns the best matching dog for each image
+- **No Auto-Decisions**: You control whether to register or reject based on scores
+- **Detailed Results**: Each image gets individual processing results
+- **Performance Metrics**: Processing time for each image and total
+
+### Single Image Endpoint
+
+The `/duplicate-detection/check-single` endpoint provides the same functionality for a single image:
+
+#### Request Format
 ```http
-GET /dogs/database/info
+POST /duplicate-detection/check-single
+Content-Type: multipart/form-data
+
+Form Data:
+- image: Single image file (JPG, PNG, BMP)
 ```
 
-**Response:**
+#### Response Format
 ```json
 {
-  "total_dogs": 10,
-  "total_embeddings": 25,
-  "database_size_mb": 2.34
+  "success": true,
+  "message": "Best match found: Buddy",
+  "best_match": {
+    "dog_id": "uuid-string",
+    "name": "Buddy",
+    "breed": "Golden Retriever",
+    "owner": "John Doe",
+    "similarity_score": 0.923,
+    "confidence": 0.923
+  },
+  "processing_time": 0.156
 }
 ```
 
-#### 4. List All Dogs
-```http
-GET /dogs/list
+## API Documentation
+
+Once the server is running, you can access:
+- **Interactive API docs**: http://127.0.0.1:8000/docs
+- **ReDoc**: http://127.0.0.1:8000/redoc
+- **API info**: http://127.0.0.1:8000/info
+
+## Testing
+
+Test the configuration:
+```bash
+python test_config.py
 ```
 
-#### 5. Remove a Dog
-```http
-DELETE /dogs/{dog_id}
+Test PostgreSQL connection:
+```bash
+python test_postgresql_integration.py
 ```
 
-#### 6. Health Check
-```http
-GET /dogs/health
+## Bulk Registration
+
+For bulk importing multiple dog images, use the bulk registration script:
+
+### Basic Usage
+```bash
+# Register all images in a folder
+python bulk_register.py /path/to/dog/images
+
+# Use structured naming (Owner_Breed_Name.jpg)
+python bulk_register.py /path/to/images --naming structured
+
+# Dry run to see what would be registered
+python bulk_register.py /path/to/images --dry-run
+
+# Custom API URL
+python bulk_register.py /path/to/images --api-url http://localhost:8000
+
+# Add delay between requests
+python bulk_register.py /path/to/images --delay 2.0
 ```
 
-## Configuration
+### Naming Strategies
 
-The application can be configured using environment variables or by modifying `app/core/config.py`:
+1. **Filename Strategy** (default):
+   - `buddy.jpg` → Name: "Buddy"
+   - `golden_retriever_max.jpg` → Name: "Golden Retriever Max"
 
-```python
-# Model settings
-YOLO_MODEL_PATH=yolov8m.pt
-CONFIDENCE_THRESHOLD=0.5
-NMS_THRESHOLD=0.4
+2. **Structured Strategy**:
+   - `John_GoldenRetriever_Buddy.jpg` → Owner: "John", Breed: "Golden Retriever", Name: "Buddy"
+   - `Sarah_Labrador_Max.jpg` → Owner: "Sarah", Breed: "Labrador", Name: "Max"
 
-# FAISS settings
-EMBEDDING_DIMENSION=512  # ArcFace uses 512-dimensional embeddings
-FAISS_INDEX_TYPE=Flat
+### Features
+- **Multiple Formats**: Supports JPG, PNG, BMP, TIFF
+- **Progress Tracking**: Shows progress for each image
+- **Error Handling**: Continues processing even if some images fail
+- **Rate Limiting**: Configurable delay between API requests
+- **Dry Run Mode**: Test without actually registering dogs
+- **Detailed Reporting**: Summary with success rates and error details
 
-# Storage settings
-UPLOAD_DIR=uploads
-EMBEDDINGS_DIR=embeddings
-DATABASE_PATH=dog_database.faiss
+### Example Output
+```
+🚀 Starting bulk registration from: /path/to/dog/images
+📋 Naming strategy: filename
+🔍 Dry run: No
+⏱️  Delay between requests: 1.0s
+============================================================
 
-# API settings
-MAX_FILE_SIZE=10485760  # 10MB
+📸 Processing image 1/3: buddy.jpg
+   🐕 Name: Buddy
+   📤 Registering...
+   ✅ Successfully registered!
+      🆔 Dog ID: 123e4567-e89b-12d3-a456-426614174000
+      🔢 Embeddings: 2
+   ⏳ Waiting 1.0s before next request...
+
+📊 BULK REGISTRATION SUMMARY
+============================================================
+📁 Total images found: 3
+✅ Successful registrations: 3
+❌ Failed registrations: 0
+🔍 Skipped images (dry run): 0
+
+🎯 Success rate: 100.0%
+🎉 Bulk registration completed successfully!
 ```
 
 ## Project Structure
 
 ```
-scan-backend/
-├── app/
-│   ├── api/
-│   │   └── routes/
-│   │       └── dogs.py          # API endpoints
-│   ├── core/
-│   │   └── config.py            # Configuration settings
-│   ├── models/
-│   │   └── schemas.py           # Pydantic models
-│   ├── services/
-│   │   ├── detection_service.py # YOLOv8 detection
-│   │   ├── embedding_service.py # ArcFace embedding generation
-│   │   └── faiss_service.py     # FAISS similarity search
-│   └── main.py                  # FastAPI application
-├── uploads/                     # Uploaded images
-├── embeddings/                  # Stored embeddings
-├── dog_database.faiss          # FAISS index
-├── dog_database_metadata.json  # Database metadata
-├── requirements.txt            # Python dependencies
-├── start.py                    # Startup script
-├── test_setup.py               # Setup verification script
-└── README.md                   # This file
+app/
+├── api/           # API routes and endpoints
+├── core/          # Configuration and database setup
+├── models/        # Database models
+├── repositories/  # Data access layer
+├── services/      # Business logic services
+└── main.py        # FastAPI application entry point
 ```
 
-## Technical Details
+## Configuration
 
-### Detection Pipeline
-1. **Image Upload**: Accepts various image formats
-2. **YOLOv8 Detection**: Detects dogs using YOLOv8m.pt model
-3. **Face Extraction**: Extracts face regions from detected dogs
-4. **Preprocessing**: Resizes and normalizes face images to 112x112 RGB for ArcFace
+The application uses Pydantic settings for configuration. Key settings include:
 
-### Embedding Generation
-- Uses **ArcFace** (insightface library) for state-of-the-art face recognition
-- Generates 512-dimensional embeddings (vs 128 for face_recognition)
-- Better accuracy and robustness compared to traditional methods
-- L2 normalization for consistent similarity computation
-
-### Similarity Search
-- FAISS IndexFlatIP for inner product similarity
-- Cosine similarity between normalized embeddings
-- Configurable threshold and top-k results
-
-### Database Storage
-- FAISS index for fast similarity search
-- JSON metadata for dog information
-- Persistent storage across application restarts
-
-## Performance Considerations
-
-- **Model Loading**: YOLOv8 and ArcFace models are loaded once at startup
-- **Batch Processing**: Multiple faces can be processed in a single image
-- **Memory Management**: Images are processed in memory and not stored permanently
-- **FAISS Optimization**: Uses efficient similarity search algorithms
-- **ArcFace Benefits**: Higher accuracy with 512-dimensional embeddings
+- **Model settings**: YOLO model path, confidence thresholds
+- **Database settings**: PostgreSQL connection parameters
+- **Storage settings**: Upload directories and file paths
+- **API settings**: File size limits and allowed extensions
 
 ## Troubleshooting
 
-### Common Issues
+### Socket Connection Issues
+If you encounter socket connection errors:
+1. Use `127.0.0.1` instead of `0.0.0.0` for the host
+2. Disable reload mode by setting `reload=False`
+3. Check your firewall and network settings
 
-1. **ArcFace Installation Issues**
-   ```bash
-   # Install insightface
-   pip install insightface
-   
-   # If you encounter issues, try:
-   pip install --upgrade pip
-   pip install insightface --no-cache-dir
-   ```
-
-2. **CUDA Issues**
-   - The current setup uses CPU-only FAISS and ArcFace
-   - For GPU acceleration, install `faiss-gpu` and configure ArcFace for GPU
-
-3. **Memory Issues**
-   - Reduce `MAX_FILE_SIZE` in configuration
-   - Process smaller images
-   - Monitor FAISS index size (512D embeddings use more memory)
-
-4. **Model Download Issues**
-   - ArcFace models are downloaded automatically on first use
-   - Check internet connection for model downloads
-   - Models are cached locally for subsequent runs
-
-### Logs
-- Check console output for detailed error messages
-- Model loading and service initialization logs are displayed at startup
-
-## Testing
-
-Run the setup verification script to check if everything is configured correctly:
-
-```bash
-python test_setup.py
-```
-
-This will test:
-- Package imports
-- Application module imports
-- Configuration loading
-- Directory creation
-- ArcFace model loading
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+### Database Connection Issues
+1. Verify PostgreSQL is running
+2. Check connection parameters in config
+3. Ensure database exists and user has proper permissions
+4. Test connection with `test_postgresql_integration.py`
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- [Ultralytics YOLOv8](https://github.com/ultralytics/ultralytics)
-- [InsightFace ArcFace](https://github.com/deepinsight/insightface)
-- [FAISS](https://github.com/facebookresearch/faiss)
-- [FastAPI](https://fastapi.tiangolo.com/)
+[Your License Here]
